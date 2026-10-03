@@ -95,9 +95,6 @@ async def handle_message(config, bot, llm, db_path, openid, content, msg_id):
         elif cmd["cmd"] == "query":
             await handle_query(bot, db_path, openid, msg_id,
                                cmd.get("priority"), cmd.get("range"))
-        elif cmd["cmd"] == "done":
-            await handle_done(bot, db_path, openid, msg_id,
-                              cmd.get("id"), cmd.get("keyword"))
         return
 
     try:
@@ -109,15 +106,25 @@ async def handle_message(config, bot, llm, db_path, openid, content, msg_id):
 
     intent = res["intent"]
     if intent == "add":
-        title = res["title"] or content
-        due = res["due_time"]
-        db.add_task(db_path, title, res["priority"], due,
-                    source_msg_id=msg_id, raw_text=content)
-        ack = commands.format_ack(res["priority"], title, due)
-        await bot.send_c2c(openid, ack, msg_id)
+        tasks = res.get("tasks") or []
+        if not tasks:
+            tasks = [{"priority": res["priority"] or "P3",
+                      "title": res["title"] or content,
+                      "due_time": res["due_time"]}]
+        acks = []
+        for t in tasks:
+            priority = db.effective_priority(t["priority"], t["due_time"])
+            db.add_task(db_path, t["title"], priority, t["due_time"],
+                        source_msg_id=msg_id, raw_text=content)
+            acks.append(commands.format_ack(priority, t["title"], t["due_time"]))
+        await bot.send_c2c(openid, "\n".join(acks), msg_id)
     elif intent == "done":
-        await handle_done(bot, db_path, openid, msg_id,
-                          keyword=res.get("title") or content)
+        target = (res.get("title") or "").strip()
+        if target.isdigit():
+            await handle_done(bot, db_path, openid, msg_id, task_id=int(target))
+        else:
+            await handle_done(bot, db_path, openid, msg_id,
+                              keyword=target or content)
     elif intent == "query":
         await handle_query(bot, db_path, openid, msg_id)
     else:  # help / chat

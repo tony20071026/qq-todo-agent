@@ -33,8 +33,16 @@ class Scheduler:
 
     async def tick_once(self):
         now = datetime.now().astimezone()
+        self._upgrade_priorities(now)
         await self._check_reminders(now)
         await self._check_digest(now)
+
+    def _upgrade_priorities(self, now):
+        """P1 tasks entering the 48h window are promoted to P0."""
+        for t in db.list_tasks(self.db_path, status="pending", priority="P1"):
+            if db.effective_priority(t["priority"], t["due_at"], now) == "P0":
+                db.set_priority(self.db_path, t["id"], "P0")
+                log.info("task #%s upgraded P1 -> P0 (due %s)", t["id"], t["due_at"])
 
     async def _check_reminders(self, now):
         tasks = db.list_tasks(self.db_path, status="pending")

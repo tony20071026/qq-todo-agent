@@ -1,35 +1,28 @@
 """User command parsing (fast keyword path) and reply formatting."""
 
-import re
-
 PRIORITIES = ("P0", "P1", "P2", "P3")
 
 QUERY_WORDS = ("查询", "待办", "列表", "list", "清单", "有什么")
-DONE_WORDS = ("完成", "做完", "搞定", "done", "标记", "已办")
 HELP_WORDS = ("帮助", "help", "用法", "指令", "怎么用")
 TODAY_WORDS = ("今日", "今天", "本日")
 WEEK_WORDS = ("本周", "这周", "一周", "7天", "七天")
+
+# Fast commands are short by nature. Anything longer is treated as content
+# for the LLM, so forwarded homework/notices are never misread as a command.
+# Note: completion intent is intentionally NOT handled here — it goes through
+# the LLM so it can judge whether the user really means "this is done".
+MAX_COMMAND_LEN = 60
 
 
 def parse(text):
     t = text.strip()
     low = t.lower()
 
+    if len(t) > MAX_COMMAND_LEN:
+        return None
+
     if any(w in low for w in HELP_WORDS) and len(t) <= 6:
         return {"cmd": "help"}
-
-    # completion: explicit id preferred
-    if any(w in low for w in DONE_WORDS):
-        m = re.search(r"(\d+)", t)
-        if m:
-            return {"cmd": "done", "id": int(m.group(1))}
-        keyword = t
-        for w in DONE_WORDS:
-            keyword = keyword.replace(w, " ")
-        keyword = keyword.strip(" ：:，,。.!！好的我了下")
-        if keyword:
-            return {"cmd": "done", "keyword": keyword}
-        return {"cmd": "done", "keyword": ""}
 
     # query
     is_query = any(w in low for w in QUERY_WORDS)

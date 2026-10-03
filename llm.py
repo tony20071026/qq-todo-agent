@@ -11,15 +11,18 @@ import httpx
 
 PRIORITIES = ("P0", "P1", "P2", "P3")
 
-SYSTEM_PROMPT = """你是一个个人待办助理，负责理解用户用中文发来的消息。
+SYSTEM_PROMPT = """你是一个个人待办助理，负责理解用户用中文发来的消息（可能是一条转发通知或一长段作业清单）。
 你必须只输出一个 JSON 对象，不要输出任何解释或 Markdown 代码块。
 
 JSON 字段：
 - intent: "add" | "done" | "query" | "help" | "chat"
-- priority: "P0" | "P1" | "P2" | "P3"（intent 为 add/done 时必填，否则可为 null）
-- title: 简洁的事件名（intent 为 add 时必填；done 时为要完成的事项关键词）
-- due_time: 截止时间，ISO8601 带时区偏移，如 "2026-10-05T18:00:00+08:00"；无法确定则为 null
-- reply: 当 intent 为 chat/help 时给用户的简短中文回复，否则为 null
+- tasks: 当 intent 为 "add" 时，把消息拆解为一条或多条待办，数组，每项字段：
+    - priority: "P0" | "P1" | "P2" | "P3"
+    - title: 简洁的事件名（20 字以内）
+    - due_time: 截止时间，ISO8601 带时区偏移，如 "2026-10-05T18:00:00+08:00"；无法确定则为 null
+  若消息只包含一件事，也要返回长度为 1 的数组。一条消息里有几个独立截止事项就拆几条。
+- title: 当 intent 为 "done" 时，填要完成的事项关键词
+- reply: 当 intent 为 "chat"/"help" 时给用户的简短中文回复，否则为 null
 
 优先级判定规则：
 - P0：48 小时内必须完成的紧急任务（截止时间在 48 小时内，或用户明确表示很紧急）
@@ -28,12 +31,12 @@ JSON 字段：
 - P3：信息记录、低优先级、可延后的事项
 
 时间解析规则（当前时区 Asia/Shanghai）：
-- “明天下午3点”“周五交”“下周一”等相对时间，基于下方提供的当前时间换算。
+- “明天下午3点”“周五交”“下周一”“10月9日21:00”等时间，基于下方提供的当前时间换算。
 - 只有日期没有具体时间时，使用该日期 23:59:59。
 - 完全无法推断时间时，due_time 为 null，不要编造。
 
 意图判定：
-- 记录新事项 -> add
+- 记录新事项（含转发的作业/通知） -> add
 - 表示某事项已完成 -> done
 - 询问待办/查询 -> query
 - 询问用法 -> help
@@ -94,21 +97,49 @@ class LLM:
         return self._normalize(result)
 
     @staticmethod
-    def _normalize(result):
+    def _norm_due(due):
+        if due and len(due) == 10:
+            return due + "T23:59:59+08:00"
+        return due or None
+
+    @classmethod
+    def _normalize(cls, result):
+        intent = result.get("intent") or "add"
         out = {
-            "intent": result.get("intent") or "add",
-            "priority": result.get("priority"),
-            "title": (result.get("title") or "").strip() or None,
-            "due_time": result.get("due_time") or None,
+            "intent": intent,
             "reply": result.get("reply") or None,
+            "priority": None,
+            "title": None,
+            "due_time": None,
+            "tasks": [],
         }
-        if out["intent"] in ("add", "done"):
-            if out["priority"] not in PRIORITIES:
-                out["priority"] = "P3"
-        else:
-            out["priority"] = None
-        if out["due_time"] and len(out["due_time"]) == 10:
-            out["due_time"] = out["due_time"] + "T23:59:59+08:00"
+        if intent == "add":
+            raw = result.get("tasks")
+            if not isinstance(raw, list) or not raw:
+                raw = [{
+                    "priority": result.get("priority"),
+                    "title": result.get("title"),
+                    "due_time": result.get("due_time"),
+                }]
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                title = (item.get("title") or "").strip()
+                if not title:
+                    continue
+                priority = item.get("priority")
+                if priority not in PRIORITIES:
+                    priority = "P3"
+                out["tasks"].append({
+                    "priority": priority,
+                    "title": title,
+                    "due_time": cls._norm_due(item.get("due_time")),
+                })
+        elif intent == "done":
+            priority = result.get("priority")
+            out["priority"] = priority if priority in PRIORITIES else "P3"
+            out["title"] = (result.get("title") or "").strip() or None
+            out["due_time"] = cls._norm_due(result.get("due_time"))
         return out
 
     async def summarize(self, tasks, now=None):

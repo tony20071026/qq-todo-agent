@@ -3,7 +3,7 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -104,6 +104,28 @@ def update_status(db_path, task_id, status):
             (status, now_iso(), task_id),
         )
         return cur.rowcount
+
+
+def set_priority(db_path, task_id, priority):
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE tasks SET priority=?, updated_at=? WHERE id=?",
+            (priority, now_iso(), task_id),
+        )
+
+
+def effective_priority(priority, due_at, now=None):
+    """P1 tasks whose deadline is within 48 hours become P0."""
+    if priority != "P1" or not due_at:
+        return priority
+    now = now or datetime.now().astimezone()
+    try:
+        due = datetime.fromisoformat(due_at)
+    except ValueError:
+        return priority
+    if due <= now + timedelta(hours=48):
+        return "P0"
+    return priority
 
 
 def set_reminded(db_path, task_id, reminded):
