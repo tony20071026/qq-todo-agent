@@ -15,13 +15,19 @@ SYSTEM_PROMPT = """你是一个个人待办助理，负责理解用户用中文�
 你必须只输出一个 JSON 对象，不要输出任何解释或 Markdown 代码块。
 
 JSON 字段：
-- intent: "add" | "done" | "query" | "help" | "chat"
+- intent: "add" | "done" | "update" | "query" | "help" | "chat"
 - tasks: 当 intent 为 "add" 时，把消息拆解为一条或多条待办，数组，每项字段：
     - priority: "P0" | "P1" | "P2" | "P3"
     - title: 简洁的事件名（20 字以内）
-    - due_time: 截止时间，ISO8601 带时区偏移，如 "2026-10-05T18:00:00+08:00"；无法确定则为 null
-  若消息只包含一件事，也要返回长度为 1 的数组。一条消息里有几个独立截止事项就拆几条。
-- title: 当 intent 为 "done" 时，填要完成的事项关键词
+    - due_time: 首次触发时间，ISO8601 带时区偏移，如 "2026-10-04T23:00:00+08:00"；无法确定则为 null
+    - repeat: 周期规则。一次性任务为 null；重复任务填对象：
+        {"freq": "daily" | "weekly" | "monthly", "interval": 数字, "until": "ISO8601 或 null"}
+      freq 为频率，interval 为间隔（每隔几个周期），until 为重复结束时间（含当天，无法确定则 null）。
+      例：“往后30天每天晚上11点” -> due_time 为今晚/明晚 23:00，repeat 为
+      {"freq":"daily","interval":1,"until":"<距今30天后的日期>T23:00:00+08:00"}。
+      若消息只包含一件事，也要返回长度为 1 的数组。
+- target: 当 intent 为 "done" 或 "update" 时，要操作的事项，填编号（如 "3"）或关键词；无法确定填 null
+- new_title / new_due / new_priority: 当 intent 为 "update" 时，用户要改成的新值，未提及的填 null
 - reply: 当 intent 为 "chat"/"help" 时给用户的简短中文回复，否则为 null
 
 优先级判定规则：
@@ -38,9 +44,12 @@ JSON 字段：
 意图判定：
 - 记录新事项（含转发的作业/通知） -> add
 - 表示某事项已完成 -> done
+- 用户要修改已有事项（改时间/标题/优先级） -> update
 - 询问待办/查询 -> query
 - 询问用法 -> help
 - 其他闲聊 -> chat
+
+若用户在纠正/修改刚说过的事项（如“整错了”“改成”“不是X是Y”），用下方“最近待办”列表中最相关的一项作为 target。
 """
 
 
@@ -81,16 +90,16 @@ class LLM:
                 return json.loads(match.group(0))
             raise
 
-    async def analyze(self, raw_text, now=None):
+    async def analyze(self, raw_text, now=None, context=None):
         now = now or datetime.now().astimezone()
-        user_msg = (
-            f"当前时间：{now.isoformat(timespec='seconds')}\n"
-            f"用户消息：{raw_text}"
-        )
+        parts = [f"当前时间：{now.isoformat(timespec='seconds')}"]
+        if context:
+            parts.append("最近待办：\n" + "\n".join(context))
+        parts.append(f"用户消息：{raw_text}")
         content = await self._chat(
             [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
+                {"role": "user", "content": "\n".join(parts)},
             ]
         )
         result = self._extract_json(content)
@@ -102,12 +111,34 @@ class LLM:
             return due + "T23:59:59+08:00"
         return due or None
 
+    @staticmethod
+    def _norm_recur(recur):
+        if not isinstance(recur, dict):
+            return None
+        freq = recur.get("freq")
+        if freq not in ("daily", "weekly", "monthly"):
+            return None
+        try:
+            interval = int(recur.get("interval") or 1)
+        except (ValueError, TypeError):
+            interval = 1
+        interval = max(interval, 1)
+        until = recur.get("until")
+        if until and len(until) == 10:
+            until = until + "T23:59:59+08:00"
+        return {"freq": freq, "interval": interval, "until": until}
+
     @classmethod
     def _normalize(cls, result):
         intent = result.get("intent") or "add"
         out = {
             "intent": intent,
             "reply": result.get("reply") or None,
+            "target": (result.get("target") or "").strip() or None,
+            "new_title": (result.get("new_title") or "").strip() or None,
+            "new_due": cls._norm_due(result.get("new_due")),
+            "new_priority": result.get("new_priority")
+            if result.get("new_priority") in PRIORITIES else None,
             "priority": None,
             "title": None,
             "due_time": None,
@@ -134,10 +165,12 @@ class LLM:
                     "priority": priority,
                     "title": title,
                     "due_time": cls._norm_due(item.get("due_time")),
+                    "repeat": cls._norm_recur(item.get("repeat")),
                 })
-        elif intent == "done":
+        elif intent in ("done", "update"):
             priority = result.get("priority")
             out["priority"] = priority if priority in PRIORITIES else "P3"
+            # keep legacy "title" as the done target keyword
             out["title"] = (result.get("title") or "").strip() or None
             out["due_time"] = cls._norm_due(result.get("due_time"))
         return out

@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source_msg_id TEXT,
     raw_text     TEXT,
     reminded     TEXT NOT NULL DEFAULT '[]',
+    recur        TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -54,20 +55,33 @@ def connect(db_path):
 def init_db(db_path):
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        if "recur" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN recur TEXT")
 
 
-def add_task(db_path, title, priority, due_at=None, source_msg_id=None, raw_text=None):
+def add_task(db_path, title, priority, due_at=None, source_msg_id=None,
+             raw_text=None, recur=None):
     ts = now_iso()
     if priority not in PRIORITIES:
         priority = "P3"
+    recur_json = json.dumps(recur, ensure_ascii=False) if recur else None
     with connect(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO tasks (title, priority, due_at, status, source_msg_id,"
-            " raw_text, reminded, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
-            (title, priority, due_at, "pending", source_msg_id, raw_text, "[]", ts, ts),
+            " raw_text, reminded, recur, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (title, priority, due_at, "pending", source_msg_id, raw_text,
+             "[]", recur_json, ts, ts),
         )
         return cur.lastrowid
+
+
+def get_recur(task):
+    try:
+        return json.loads(task.get("recur")) if task.get("recur") else None
+    except (ValueError, TypeError):
+        return None
 
 
 def get_task(db_path, task_id):
@@ -112,6 +126,30 @@ def set_priority(db_path, task_id, priority):
             "UPDATE tasks SET priority=?, updated_at=? WHERE id=?",
             (priority, now_iso(), task_id),
         )
+
+
+def update_task(db_path, task_id, **fields):
+    """Partially update a task. Allowed fields: title, due_at, priority, recur,
+    status, reminded."""
+    allowed = {"title", "due_at", "priority", "recur", "status", "reminded"}
+    sets, args = [], []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        if key == "recur" and isinstance(value, dict):
+            value = json.dumps(value, ensure_ascii=False)
+        sets.append(f"{key}=?")
+        args.append(value)
+    if not sets:
+        return 0
+    sets.append("updated_at=?")
+    args.append(now_iso())
+    args.append(task_id)
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE id=?", args
+        )
+        return cur.rowcount
 
 
 def effective_priority(priority, due_at, now=None):

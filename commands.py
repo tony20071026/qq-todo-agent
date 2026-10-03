@@ -55,6 +55,8 @@ def fmt_due(due):
 def format_task(task, with_id=True):
     due = fmt_due(task.get("due_at"))
     parts = [f"[{task['priority']}]", task["title"]]
+    if task.get("recur"):
+        parts.append("↻")
     if due:
         parts.append(due)
     if with_id:
@@ -62,11 +64,18 @@ def format_task(task, with_id=True):
     return " ".join(parts)
 
 
-def format_ack(priority, title, due):
+REPEAT_LABEL = {"daily": "每天", "weekly": "每周", "monthly": "每月"}
+
+
+def format_ack(priority, title, due, repeat=None):
     """Format the mandatory acknowledgement: [P几],事件名,时间,已被记录"""
     bits = [f"[{priority}]", title]
     if due:
         bits.append(fmt_due(due))
+    if repeat:
+        label = REPEAT_LABEL.get(repeat.get("freq"), "重复")
+        interval = repeat.get("interval", 1)
+        bits.append(f"{label}重复{'(每'+str(interval)+'期)' if interval > 1 else ''}")
     return ", ".join(bits) + ", 已被记录"
 
 

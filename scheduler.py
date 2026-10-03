@@ -9,6 +9,31 @@ import db
 log = logging.getLogger("scheduler")
 
 
+def _add_months(dt, months):
+    month = dt.month - 1 + months
+    year = dt.year + month // 12
+    month = month % 12 + 1
+    day = min(dt.day, [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+                       else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+def next_occurrence(due, rule, now):
+    """Advance a recurring due time to the next occurrence strictly after now."""
+    freq = rule.get("freq", "daily")
+    interval = max(int(rule.get("interval", 1) or 1), 1)
+    steps = 0
+    while due <= now and steps < 100000:
+        if freq == "weekly":
+            due = due + timedelta(weeks=interval)
+        elif freq == "monthly":
+            due = _add_months(due, interval)
+        else:
+            due = due + timedelta(days=interval)
+        steps += 1
+    return due
+
+
 class Scheduler:
     def __init__(self, config, llm, ntfy):
         app = config["app"]
@@ -38,8 +63,10 @@ class Scheduler:
         await self._check_digest(now)
 
     def _upgrade_priorities(self, now):
-        """P1 tasks entering the 48h window are promoted to P0."""
+        """P1 tasks entering the 48h window are promoted to P0 (one-off only)."""
         for t in db.list_tasks(self.db_path, status="pending", priority="P1"):
+            if t.get("recur"):
+                continue
             if db.effective_priority(t["priority"], t["due_at"], now) == "P0":
                 db.set_priority(self.db_path, t["id"], "P0")
                 log.info("task #%s upgraded P1 -> P0 (due %s)", t["id"], t["due_at"])
@@ -52,6 +79,9 @@ class Scheduler:
             try:
                 due = datetime.fromisoformat(t["due_at"])
             except ValueError:
+                continue
+            if t.get("recur"):
+                await self._check_recurring(t, due, now)
                 continue
             leads = self.reminders.get(t["priority"], [])
             if not leads:
@@ -77,6 +107,26 @@ class Scheduler:
             await self.ntfy.notify_task(t, kind=kind)
             reminded.update(applicable)
             db.set_reminded(self.db_path, t["id"], sorted(reminded))
+
+    async def _check_recurring(self, t, due, now):
+        """Recurring tasks notify at the occurrence time, then roll forward."""
+        if now < due:
+            return
+        rule = db.get_recur(t) or {"freq": "daily", "interval": 1}
+        log.info("recurring reminder task #%s (%s)", t["id"], t["title"])
+        await self.ntfy.notify_task(t, kind="到点提醒")
+        nxt = next_occurrence(due, rule, now)
+        until = rule.get("until")
+        if until:
+            try:
+                if nxt > datetime.fromisoformat(until):
+                    db.update_status(self.db_path, t["id"], "done")
+                    log.info("recurring task #%s finished", t["id"])
+                    return
+            except ValueError:
+                pass
+        db.update_task(self.db_path, t["id"],
+                       due_at=nxt.isoformat(timespec="seconds"), reminded="[]")
 
     async def _check_digest(self, now):
         today = now.strftime("%Y-%m-%d")
