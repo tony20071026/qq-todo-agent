@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     raw_text     TEXT,
     reminded     TEXT NOT NULL DEFAULT '[]',
     recur        TEXT,
+    trash_exempt INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -58,6 +59,9 @@ def init_db(db_path):
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
         if "recur" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN recur TEXT")
+        if "trash_exempt" not in cols:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN trash_exempt INTEGER NOT NULL DEFAULT 0")
 
 
 def add_task(db_path, title, priority, due_at=None, source_msg_id=None,
@@ -131,7 +135,8 @@ def set_priority(db_path, task_id, priority):
 def update_task(db_path, task_id, **fields):
     """Partially update a task. Allowed fields: title, due_at, priority, recur,
     status, reminded."""
-    allowed = {"title", "due_at", "priority", "recur", "status", "reminded"}
+    allowed = {"title", "due_at", "priority", "recur", "status", "reminded",
+               "trash_exempt"}
     sets, args = [], []
     for key, value in fields.items():
         if key not in allowed:
@@ -179,6 +184,25 @@ def get_reminded(task):
         return list(json.loads(task.get("reminded") or "[]"))
     except (ValueError, TypeError):
         return []
+
+
+def delete_tasks(db_path, ids, status="trashed"):
+    ids = [int(i) for i in ids]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            f"DELETE FROM tasks WHERE id IN ({placeholders}) AND status=?",
+            [*ids, status],
+        )
+        return cur.rowcount
+
+
+def delete_trashed(db_path):
+    with connect(db_path) as conn:
+        cur = conn.execute("DELETE FROM tasks WHERE status='trashed'")
+        return cur.rowcount
 
 
 def find_tasks_by_keyword(db_path, keyword, status="pending", title_only=False):

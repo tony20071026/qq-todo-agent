@@ -42,6 +42,7 @@ class Scheduler:
         self.digest_time = app.get("digest_time", "08:00")
         self.reminders = {k: list(v) for k, v in (app.get("reminders") or {}).items()}
         self.tick = int(app.get("tick", 30))
+        self.trash_after = float(app.get("trash_after_hours", 3))
         self.llm = llm
         self.ntfy = ntfy
 
@@ -59,8 +60,25 @@ class Scheduler:
     async def tick_once(self):
         now = datetime.now().astimezone()
         self._upgrade_priorities(now)
+        self._trash_expired(now)
         await self._check_reminders(now)
         await self._check_digest(now)
+
+    def _trash_expired(self, now):
+        """Move one-off tasks that are overdue by trash_after hours to trash."""
+        cutoff = timedelta(hours=self.trash_after)
+        for t in db.list_tasks(self.db_path, status="pending"):
+            if t.get("recur") or not t.get("due_at"):
+                continue
+            if t.get("trash_exempt"):
+                continue
+            try:
+                due = datetime.fromisoformat(t["due_at"])
+            except ValueError:
+                continue
+            if now >= due + cutoff:
+                db.update_status(self.db_path, t["id"], "trashed")
+                log.info("task #%s trashed (overdue %s)", t["id"], t["due_at"])
 
     def _upgrade_priorities(self, now):
         """P1 tasks entering the 48h window are promoted to P0 (one-off only)."""

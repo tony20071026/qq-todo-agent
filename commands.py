@@ -1,11 +1,17 @@
 """User command parsing (fast keyword path) and reply formatting."""
 
+import re
+
 PRIORITIES = ("P0", "P1", "P2", "P3")
 
 QUERY_WORDS = ("查询", "待办", "列表", "list", "清单", "有什么")
 HELP_WORDS = ("帮助", "help", "用法", "指令", "怎么用")
 TODAY_WORDS = ("今日", "今天", "本日")
 WEEK_WORDS = ("本周", "这周", "一周", "7天", "七天")
+TRASH_WORDS = ("垃圾箱", "垃圾站", "回收站", "垃圾桶", "垃圾", "废纸篓")
+RESTORE_WORDS = ("恢复", "还原", "找回")
+EMPTY_WORDS = ("清空", "清光", "全部清", "都清", "全清")
+DELETE_WORDS = ("清除", "删除", "清掉", "丢弃", "丢掉", "移除")
 
 # Fast commands are short by nature. Anything longer is treated as content
 # for the LLM, so forwarded homework/notices are never misread as a command.
@@ -23,6 +29,28 @@ def parse(text):
 
     if any(w in low for w in HELP_WORDS) and len(t) <= 6:
         return {"cmd": "help"}
+
+    # empty the whole trash: must be checked before plain "trash"
+    if any(w in low for w in TRASH_WORDS) and any(w in low for w in EMPTY_WORDS):
+        return {"cmd": "empty_trash"}
+
+    # delete specific items (numbers) from trash
+    if any(w in low for w in DELETE_WORDS):
+        ids = [int(x) for x in re.findall(r"\d+", t)]
+        return {"cmd": "delete", "ids": ids}
+
+    if any(w in low for w in TRASH_WORDS):
+        return {"cmd": "trash"}
+
+    if any(w in low for w in RESTORE_WORDS):
+        m = re.search(r"(\d+)", t)
+        if m:
+            return {"cmd": "restore", "id": int(m.group(1))}
+        keyword = t
+        for w in RESTORE_WORDS:
+            keyword = keyword.replace(w, " ")
+        keyword = keyword.strip(" ：:，,。.!！的把")
+        return {"cmd": "restore", "keyword": keyword or None}
 
     # query
     is_query = any(w in low for w in QUERY_WORDS)
@@ -91,8 +119,11 @@ def format_query(tasks, title="当前待办"):
 HELP_TEXT = (
     "用法：\n"
     "· 直接发消息记录事项，例：明天下午3点交高数作业\n"
+    "· 重复：往后30天每天晚上十一点提醒我喷药\n"
     "· 查询：查询 / 今日 / 本周 / P0 / 待办\n"
     "· 完成：完成 3（编号）或 完成了高数作业\n"
+    "· 修改：把3改到10号23:59\n"
+    "· 垃圾箱：垃圾箱 / 恢复 3 / 清除 3 / 清空垃圾箱\n"
     "· 帮助：帮助\n\n"
     "优先级：P0=48小时内紧急  P1=作业/有截止  P2=重要不紧急  P3=备忘"
 )

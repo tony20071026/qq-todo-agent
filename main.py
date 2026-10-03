@@ -45,6 +45,61 @@ def _filter_range(tasks, rng):
     return out
 
 
+async def handle_trash(bot, db_path, openid, msg_id):
+    tasks = db.list_tasks(db_path, status="trashed")
+    if not tasks:
+        await bot.send_c2c(openid, "🗑️ 垃圾箱是空的。", msg_id)
+        return
+    await bot.send_c2c(openid, commands.format_query(tasks, "🗑️ 垃圾箱"), msg_id)
+
+
+async def handle_empty_trash(bot, db_path, openid, msg_id):
+    n = db.delete_trashed(db_path)
+    if n:
+        await bot.send_c2c(openid, f"🧹 已清空垃圾箱，删除 {n} 项。", msg_id)
+    else:
+        await bot.send_c2c(openid, "垃圾箱已经是空的。", msg_id)
+
+
+async def handle_delete(bot, db_path, openid, msg_id, ids):
+    if not ids:
+        await bot.send_c2c(openid, "请指定要清除的编号，如：清除 3。", msg_id)
+        return
+    trashed = {t["id"]: t for t in db.list_tasks(db_path, status="trashed")}
+    removed = [trashed[i]["title"] for i in ids if i in trashed]
+    missing = [i for i in ids if i not in trashed]
+    n = db.delete_tasks(db_path, ids)
+    if removed:
+        await bot.send_c2c(
+            openid, f"🧹 已从垃圾箱清除 {n} 项：{'、'.join(removed)}", msg_id)
+    if missing and not removed:
+        await bot.send_c2c(
+            openid, f"垃圾箱里没有：{'、'.join('#' + str(i) for i in missing)}", msg_id)
+
+
+async def handle_restore(bot, db_path, openid, msg_id, task_id=None, keyword=None):
+    target = str(task_id) if task_id is not None else keyword
+    matches = _find_matches(db_path, target, status="trashed")
+    if not matches:
+        await bot.send_c2c(openid, f"垃圾箱里没有找到「{target}」。", msg_id)
+        return
+    if len(matches) > 1:
+        await bot.send_c2c(
+            openid,
+            commands.format_query(matches, "匹配到多个，请回复要恢复的编号"),
+            msg_id,
+        )
+        return
+    task = matches[0]
+    db.update_task(db_path, task["id"], status="pending", trash_exempt=1)
+    await bot.send_c2c(
+        openid,
+        f"已恢复 [{task['priority']}] {task['title']} (#{task['id']})，"
+        f"可用「修改 {task['id']} <新时间>」重新设置截止时间。",
+        msg_id,
+    )
+
+
 async def handle_query(bot, db_path, openid, msg_id, priority=None, rng=None):
     tasks = db.list_tasks(db_path, status="pending", priority=priority)
     if rng:
@@ -59,17 +114,20 @@ async def handle_query(bot, db_path, openid, msg_id, priority=None, rng=None):
     await bot.send_c2c(openid, commands.format_query(tasks, title), msg_id)
 
 
-def _find_matches(db_path, target):
+def _find_matches(db_path, target, status="pending"):
     """Resolve a task by explicit id, then by title, then by raw text."""
     if not target:
         return []
     explicit = _explicit_id(target)
     if explicit is not None:
         task = db.get_task(db_path, explicit)
-        return [task] if task else []
-    matches = db.find_tasks_by_keyword(db_path, target, title_only=True)
+        if task and task.get("status") == status:
+            return [task]
+        return []
+    matches = db.find_tasks_by_keyword(db_path, target, status=status,
+                                       title_only=True)
     if not matches:
-        matches = db.find_tasks_by_keyword(db_path, target)
+        matches = db.find_tasks_by_keyword(db_path, target, status=status)
     return matches
 
 
@@ -157,6 +215,15 @@ async def handle_message(config, bot, llm, db_path, openid, content, msg_id):
         elif cmd["cmd"] == "query":
             await handle_query(bot, db_path, openid, msg_id,
                                cmd.get("priority"), cmd.get("range"))
+        elif cmd["cmd"] == "trash":
+            await handle_trash(bot, db_path, openid, msg_id)
+        elif cmd["cmd"] == "restore":
+            await handle_restore(bot, db_path, openid, msg_id,
+                                 cmd.get("id"), cmd.get("keyword"))
+        elif cmd["cmd"] == "empty_trash":
+            await handle_empty_trash(bot, db_path, openid, msg_id)
+        elif cmd["cmd"] == "delete":
+            await handle_delete(bot, db_path, openid, msg_id, cmd.get("ids"))
         return
 
     try:

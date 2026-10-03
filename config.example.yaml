@@ -26,6 +26,8 @@ app:
   timezone: "Asia/Shanghai"
   db_path: "memo.db"
   digest_time: "08:00"   # daily summary time, local tz
+  # move overdue tasks to trash after this many hours past the deadline
+  trash_after_hours: 3
   # reminder lead times (minutes) per priority
   reminders:
     P0: [1440, 120]      # 1 day + 2 hours before
