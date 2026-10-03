@@ -5,11 +5,13 @@ memo.db, and pushes daily digests / event reminders through ntfy.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import sys
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -43,6 +45,50 @@ def _filter_range(tasks, rng):
         elif rng == "week" and d <= today + timedelta(days=7):
             out.append(t)
     return out
+
+
+async def handle_set_digest(bot, db_path, openid, msg_id, times, default_times, tz):
+    """Query or update the daily broadcast times (stored as a DB override)."""
+    if not times:
+        raw = db.kv_get(db_path, "digest_times")
+        current = default_times
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list) and parsed:
+                    current = sorted(parsed)
+            except ValueError:
+                pass
+        await bot.send_c2c(
+            openid,
+            "当前每日播报时间：" + "、".join(current) + "（北京时间）。"
+            "发送「播报时间改成 08:30 和 23:30」即可调整。",
+            msg_id,
+        )
+        return
+    times = sorted(set(times))
+    db.kv_set(db_path, "digest_times", json.dumps(times))
+    # Mark already-passed slots today as sent so we don't fire a catch-up now.
+    now = datetime.now(ZoneInfo(tz))
+    today = now.strftime("%Y-%m-%d")
+    try:
+        sent = json.loads(db.kv_get(db_path, "last_digest") or "{}")
+    except ValueError:
+        sent = {}
+    if not isinstance(sent, dict):
+        sent = {}
+    for slot in times:
+        hh, mm = (slot.split(":") + ["0"])[:2]
+        target = now.replace(hour=int(hh), minute=int(mm), second=0,
+                             microsecond=0)
+        if now >= target:
+            sent[slot] = today
+    db.kv_set(db_path, "last_digest", json.dumps(sent))
+    await bot.send_c2c(
+        openid,
+        "已把每日播报时间改为：" + "、".join(times) + "（北京时间）。",
+        msg_id,
+    )
 
 
 async def handle_trash(bot, db_path, openid, msg_id):
@@ -267,6 +313,13 @@ async def handle_message(config, bot, llm, db_path, openid, content, msg_id):
         await handle_update(bot, db_path, openid, msg_id, res.get("target"),
                             res.get("new_title"), res.get("new_due"),
                             res.get("new_priority"))
+    elif intent == "set_digest":
+        app_cfg = config.get("app", {})
+        default_times = app_cfg.get("digest_times") or [
+            app_cfg.get("digest_time", "08:00")]
+        await handle_set_digest(bot, db_path, openid, msg_id,
+                                res.get("digest_times"), default_times,
+                                app_cfg.get("timezone", "Asia/Shanghai"))
     elif intent == "query":
         await handle_query(bot, db_path, openid, msg_id)
     else:  # help / chat
@@ -303,6 +356,7 @@ async def main():
         config["llm"]["api_key"],
         config["llm"]["model"],
         config["llm"].get("timeout", 60),
+        config["app"].get("timezone", "Asia/Shanghai"),
     )
     ntfy = Ntfy(
         config["ntfy"]["server"],

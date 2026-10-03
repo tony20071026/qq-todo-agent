@@ -25,7 +25,7 @@ ntfy:
 app:
   timezone: "Asia/Shanghai"
   db_path: "memo.db"
-  digest_time: "08:00"   # daily summary time, local tz
+  digest_times: ["08:30", "23:30"]   # daily broadcast times, local tz (Asia/Shanghai)
   # move overdue tasks to trash after this many hours past the deadline
   trash_after_hours: 3
   # reminder lead times (minutes) per priority

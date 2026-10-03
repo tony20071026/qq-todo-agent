@@ -1,8 +1,10 @@
 """Background scheduler: daily digest + per-event reminders (asyncio loop)."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import db
 
@@ -39,15 +41,35 @@ class Scheduler:
         app = config["app"]
         self.db_path = app["db_path"]
         self.tz = app.get("timezone", "Asia/Shanghai")
-        self.digest_time = app.get("digest_time", "08:00")
+        self.zone = ZoneInfo(self.tz)
+        times = app.get("digest_times")
+        if not times:
+            times = [app["digest_time"]] if app.get("digest_time") else ["08:00"]
+        self.default_digest_times = sorted(times)
         self.reminders = {k: list(v) for k, v in (app.get("reminders") or {}).items()}
         self.tick = int(app.get("tick", 30))
         self.trash_after = float(app.get("trash_after_hours", 3))
         self.llm = llm
         self.ntfy = ntfy
 
+    def now(self):
+        return datetime.now(self.zone)
+
+    def current_digest_times(self):
+        """Runtime override from DB takes precedence over config default."""
+        raw = db.kv_get(self.db_path, "digest_times")
+        if raw:
+            try:
+                times = json.loads(raw)
+                if isinstance(times, list) and times:
+                    return sorted(times)
+            except ValueError:
+                pass
+        return self.default_digest_times
+
     async def run(self):
-        log.info("scheduler started (digest=%s tz=%s)", self.digest_time, self.tz)
+        log.info("scheduler started (digests=%s tz=%s)",
+                 ",".join(self.current_digest_times()), self.tz)
         while True:
             try:
                 await self.tick_once()
@@ -58,7 +80,7 @@ class Scheduler:
             await asyncio.sleep(self.tick)
 
     async def tick_once(self):
-        now = datetime.now().astimezone()
+        now = self.now()
         self._upgrade_priorities(now)
         self._trash_expired(now)
         await self._check_reminders(now)
@@ -148,14 +170,29 @@ class Scheduler:
 
     async def _check_digest(self, now):
         today = now.strftime("%Y-%m-%d")
-        if db.kv_get(self.db_path, "last_digest_date") == today:
+        try:
+            sent = json.loads(db.kv_get(self.db_path, "last_digest") or "{}")
+        except ValueError:
+            sent = {}
+        if not isinstance(sent, dict):
+            sent = {}
+        passed = []
+        for slot in self.current_digest_times():
+            if sent.get(slot) == today:
+                continue
+            hh, mm = (slot.split(":") + ["0"])[:2]
+            target = now.replace(hour=int(hh), minute=int(mm), second=0,
+                                 microsecond=0)
+            if now >= target:
+                passed.append(slot)
+        if not passed:
             return
-        hh, mm = (self.digest_time.split(":") + ["0"])[:2]
-        target = now.replace(
-            hour=int(hh), minute=int(mm), second=0, microsecond=0
-        )
-        if now < target:
-            return
+        await self._send_digest(now)
+        for slot in passed:
+            sent[slot] = today
+        db.kv_set(self.db_path, "last_digest", json.dumps(sent))
+
+    async def _send_digest(self, now):
         tasks = db.list_tasks(self.db_path, status="pending")
         summary = await self.llm.summarize(tasks)
         body = summary
@@ -163,8 +200,8 @@ class Scheduler:
             body += "\n\n— 明细 —\n"
             for t in tasks:
                 due = (" 截止 " + t["due_at"][:16].replace("T", " ")) if t.get("due_at") else ""
-                body += f"[{t['priority']}] {t['title']}{due} (#{t['id']})\n"
+                mark = "↻ " if t.get("recur") else ""
+                body += f"{mark}[{t['priority']}] {t['title']}{due} (#{t['id']})\n"
         log.info("sending daily digest (%d tasks)", len(tasks))
         await self.ntfy.send(body, title="每日待办汇总", priority="default",
                              tags="calendar")
-        db.kv_set(self.db_path, "last_digest_date", today)

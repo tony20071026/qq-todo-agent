@@ -6,6 +6,7 @@ Uses the Alibaba Cloud Model Studio OpenAI-compatible /chat/completions API.
 import json
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -15,7 +16,7 @@ SYSTEM_PROMPT = """你是一个个人待办助理，负责理解用户用中文�
 你必须只输出一个 JSON 对象，不要输出任何解释或 Markdown 代码块。
 
 JSON 字段：
-- intent: "add" | "done" | "update" | "query" | "help" | "chat"
+- intent: "add" | "done" | "update" | "query" | "help" | "set_digest" | "chat"
 - tasks: 当 intent 为 "add" 时，把消息拆解为一条或多条待办，数组，每项字段：
     - priority: "P0" | "P1" | "P2" | "P3"
     - title: 简洁的事件名（20 字以内）
@@ -28,6 +29,8 @@ JSON 字段：
       若消息只包含一件事，也要返回长度为 1 的数组。
 - target: 当 intent 为 "done" 或 "update" 时，要操作的事项，填编号（如 "3"）或关键词；无法确定填 null
 - new_title / new_due / new_priority: 当 intent 为 "update" 时，用户要改成的新值，未提及的填 null
+- digest_times: 当 intent 为 "set_digest" 时，用户希望设置的每日播报时间列表，
+  24 小时制字符串数组，如 ["08:30","23:30"]（北京时间）；若用户只是询问当前播报时间则为 null
 - reply: 当 intent 为 "chat"/"help" 时给用户的简短中文回复，否则为 null
 
 优先级判定规则：
@@ -45,6 +48,7 @@ JSON 字段：
 - 记录新事项（含转发的作业/通知） -> add
 - 表示某事项已完成 -> done
 - 用户要修改已有事项（改时间/标题/优先级） -> update
+- 用户要调整每日播报/推送的时间（如“改成早上9点和晚上10点播报”） -> set_digest
 - 询问待办/查询 -> query
 - 询问用法 -> help
 - 其他闲聊 -> chat
@@ -54,11 +58,12 @@ JSON 字段：
 
 
 class LLM:
-    def __init__(self, base_url, api_key, model, timeout=60):
+    def __init__(self, base_url, api_key, model, timeout=60, tz="Asia/Shanghai"):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
+        self.zone = ZoneInfo(tz)
 
     async def _chat(self, messages, temperature=0.2):
         url = f"{self.base_url}/chat/completions"
@@ -91,7 +96,7 @@ class LLM:
             raise
 
     async def analyze(self, raw_text, now=None, context=None):
-        now = now or datetime.now().astimezone()
+        now = now or datetime.now(self.zone)
         parts = [f"当前时间：{now.isoformat(timespec='seconds')}"]
         if context:
             parts.append("最近待办：\n" + "\n".join(context))
@@ -110,6 +115,19 @@ class LLM:
         if due and len(due) == 10:
             return due + "T23:59:59+08:00"
         return due or None
+
+    @staticmethod
+    def _norm_time(value):
+        if not isinstance(value, str):
+            return None
+        m = re.fullmatch(r"\s*(\d{1,2})\s*[:：点时]\s*(\d{1,2})?\s*(?:分)?\s*", value)
+        if not m:
+            return None
+        hour = int(m.group(1))
+        minute = int(m.group(2)) if m.group(2) else 0
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+        return None
 
     @staticmethod
     def _norm_recur(recur):
@@ -139,6 +157,7 @@ class LLM:
             "new_due": cls._norm_due(result.get("new_due")),
             "new_priority": result.get("new_priority")
             if result.get("new_priority") in PRIORITIES else None,
+            "digest_times": None,
             "priority": None,
             "title": None,
             "due_time": None,
@@ -173,11 +192,20 @@ class LLM:
             # keep legacy "title" as the done target keyword
             out["title"] = (result.get("title") or "").strip() or None
             out["due_time"] = cls._norm_due(result.get("due_time"))
+        elif intent == "set_digest":
+            raw = result.get("digest_times")
+            if isinstance(raw, list):
+                times = []
+                for item in raw:
+                    norm = cls._norm_time(item)
+                    if norm and norm not in times:
+                        times.append(norm)
+                out["digest_times"] = sorted(times) or None
         return out
 
     async def summarize(self, tasks, now=None):
         """Generate a natural-language daily digest from pending tasks."""
-        now = now or datetime.now().astimezone()
+        now = now or datetime.now(self.zone)
         lines = []
         for t in tasks:
             due = t.get("due_at") or "无截止"
