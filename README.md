@@ -69,6 +69,19 @@ sudo systemctl status qq-agent
 | `scheduler.py` | 每日汇总 + 事件前提醒 |
 | `commands.py` | 关键词指令解析与回复格式化 |
 
+## 迁移到新服务器
+
+```bash
+git clone https://github.com/tony20071026/qq-todo-agent.git
+cd qq-todo-agent
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp config.example.yaml config.yaml   # 填入 app_id / app_secret / llm.api_key / ntfy.topic
+./run.sh
+```
+
+注意：`config.yaml` 与 `memo.db` 含密钥/数据，已被 `.gitignore` 排除，不会进仓库。
+迁移历史数据时需手动拷贝 `memo.db`；若用 systemd，记得同步 `qq-agent.service` 里的路径。
+
 ## 说明
 
 - QQ 主动消息有频控且用户可关闭，因此推送统一走 ntfy；QQ 只做被动回复。
