@@ -1,0 +1,18 @@
+[Unit]
+Description=QQ Todo Assistant (LLM + ntfy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/test_for_qq_agent
+Environment=QQ_AGENT_CONFIG=/root/test_for_qq_agent/config.yaml
+ExecStart=/root/test_for_qq_agent/.venv/bin/python /root/test_for_qq_agent/main.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/root/test_for_qq_agent/agent.log
+StandardError=append:/root/test_for_qq_agent/agent.log
+
+[Install]
+WantedBy=multi-user.target

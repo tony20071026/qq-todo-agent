@@ -1,0 +1,36 @@
+# QQ bot credentials
+qq:
+  app_id: "YOUR_APP_ID"
+  app_secret: "YOUR_APP_SECRET"
+  # REST API base; token endpoint is used only to fetch access_token.
+  api_base: "https://api.sgroup.qq.com"
+  token_url: "https://bots.qq.com/app/getAppAccessToken"
+  # 1 << 25 = GROUP_AND_C2C_EVENT (C2C single-chat messages)
+  intents: 33554432
+
+# LLM (Alibaba Cloud Model Studio, OpenAI-compatible)
+llm:
+  base_url: "https://ws-483pxxzqr92gcgsp.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+  api_key: "YOUR_DASHSCOPE_API_KEY"
+  model: "qwen3.8-flash"
+  timeout: 60
+
+# ntfy push
+ntfy:
+  server: "https://ntfy.sh"
+  topic: "YOUR_RANDOM_TOPIC"
+  token: ""            # optional, for protected topics
+
+# behavior
+app:
+  timezone: "Asia/Shanghai"
+  db_path: "memo.db"
+  digest_time: "08:00"   # daily summary time, local tz
+  # reminder lead times (minutes) per priority
+  reminders:
+    P0: [1440, 120]      # 1 day + 2 hours before
+    P1: [1440]           # 1 day before
+    P2: []
+    P3: []
+  # tick interval (seconds) for scheduler loop
+  tick: 30

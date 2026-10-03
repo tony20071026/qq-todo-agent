@@ -1,0 +1,17 @@
+# secrets / runtime data
+config.yaml
+memo.db
+memo.db-wal
+memo.db-shm
+agent.log
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# editors / os
+.idea/
+.vscode/
+.DS_Store

@@ -1,0 +1,3 @@
+httpx>=0.27
+websockets>=13
+PyYAML>=6
