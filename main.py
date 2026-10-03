@@ -7,6 +7,7 @@ memo.db, and pushes daily digests / event reminders through ntfy.
 import asyncio
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 
@@ -65,8 +66,15 @@ async def handle_done(bot, db_path, openid, msg_id, task_id=None, keyword=None):
             await bot.send_c2c(openid, f"没有找到编号 #{task_id} 的待办。", msg_id)
             return
         matches = [task]
+    elif keyword:
+        # Prefer matching the task title; only fall back to raw text if the
+        # title has no match. This avoids every task from one forwarded
+        # message (which share the same raw_text) matching at once.
+        matches = db.find_tasks_by_keyword(db_path, keyword, title_only=True)
+        if not matches:
+            matches = db.find_tasks_by_keyword(db_path, keyword)
     else:
-        matches = db.find_tasks_by_keyword(db_path, keyword or "") if keyword else []
+        matches = []
     if not matches:
         await bot.send_c2c(openid, f"没有找到匹配「{keyword or task_id}」的待办。", msg_id)
         return
@@ -120,15 +128,29 @@ async def handle_message(config, bot, llm, db_path, openid, content, msg_id):
         await bot.send_c2c(openid, "\n".join(acks), msg_id)
     elif intent == "done":
         target = (res.get("title") or "").strip()
-        if target.isdigit():
-            await handle_done(bot, db_path, openid, msg_id, task_id=int(target))
+        explicit = _explicit_id(target)
+        if explicit is None:
+            explicit = _explicit_id(content)
+        if explicit is not None:
+            await handle_done(bot, db_path, openid, msg_id, task_id=explicit)
         else:
             await handle_done(bot, db_path, openid, msg_id,
                               keyword=target or content)
     elif intent == "query":
         await handle_query(bot, db_path, openid, msg_id)
     else:  # help / chat
-        await bot.send_c2c(openid, res.get("reply") or commands.HELP_TEXT, msg_id)
+        explicit = _explicit_id(content)
+        if explicit is not None and db.get_task(db_path, explicit):
+            # user replied with a task number after being asked which one
+            await handle_done(bot, db_path, openid, msg_id, task_id=explicit)
+        else:
+            await bot.send_c2c(openid, res.get("reply") or commands.HELP_TEXT, msg_id)
+
+
+def _explicit_id(text):
+    """Return the task id for inputs like '2', '#2', '第2条', else None."""
+    m = re.fullmatch(r"\s*#?\s*第?\s*(\d+)\s*[条号]?\s*", text or "")
+    return int(m.group(1)) if m else None
 
 
 async def main():

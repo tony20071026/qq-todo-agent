@@ -143,13 +143,17 @@ def get_reminded(task):
         return []
 
 
-def find_tasks_by_keyword(db_path, keyword, status="pending"):
+def find_tasks_by_keyword(db_path, keyword, status="pending", title_only=False):
     kw = f"%{keyword}%"
+    if title_only:
+        cond, args = "title LIKE ?", [status, kw]
+    else:
+        cond, args = "(title LIKE ? OR raw_text LIKE ?)", [status, kw, kw]
     with connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM tasks WHERE status=? AND (title LIKE ? OR raw_text LIKE ?)"
+            f"SELECT * FROM tasks WHERE status=? AND {cond}"
             " ORDER BY (due_at IS NULL), due_at ASC, id ASC LIMIT 5",
-            (status, kw, kw),
+            args,
         ).fetchall()
         return [dict(r) for r in rows]
 
