@@ -86,3 +86,7 @@ cp config.example.yaml config.yaml   # 填入 app_id / app_secret / llm.api_key 
 
 - QQ 主动消息有频控且用户可关闭，因此推送统一走 ntfy；QQ 只做被动回复。
 - bot 的 WebSocket 必须在线；离线期间的消息会在重连后补发（单聊 60 分钟内）。
+
+## License
+
+本项目遵循 [GNU General Public License v3.0](LICENSE)（GPL-3.0）。
