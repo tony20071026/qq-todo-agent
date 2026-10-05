@@ -20,6 +20,28 @@ DELETE_WORDS = ("清除", "删除", "清掉", "丢弃", "丢掉", "移除")
 MAX_COMMAND_LEN = 60
 
 
+def _strip_tokens(text, tokens):
+    result = text
+    for token in tokens:
+        result = result.replace(token, "")
+    return result
+
+
+def _is_query_command(text, low):
+    """True only when the message is made up *entirely* of query keywords,
+    priority tags and punctuation — so '今天12点打印假条' is not a query."""
+    has_token = (
+        any(w in low for w in QUERY_WORDS + TODAY_WORDS + WEEK_WORDS)
+        or re.search(r"(?i)p[0-3]", text) is not None
+    )
+    if not has_token:
+        return False
+    rest = _strip_tokens(text, QUERY_WORDS + TODAY_WORDS + WEEK_WORDS)
+    rest = re.sub(r"(?i)p[0-3]", "", rest)
+    rest = re.sub(r"[\s，。！？!?、,.:：;；~～]+", "", rest)
+    return rest == ""
+
+
 def parse(text):
     t = text.strip()
     low = t.lower()
@@ -30,41 +52,36 @@ def parse(text):
     if any(w in low for w in HELP_WORDS) and len(t) <= 6:
         return {"cmd": "help"}
 
+    has_number = re.search(r"\d+", t) is not None
+    has_trash = any(w in low for w in TRASH_WORDS)
+
     # empty the whole trash: must be checked before plain "trash"
-    if any(w in low for w in TRASH_WORDS) and any(w in low for w in EMPTY_WORDS):
+    if has_trash and any(w in low for w in EMPTY_WORDS):
         return {"cmd": "empty_trash"}
 
-    # delete specific items (numbers) from trash
-    if any(w in low for w in DELETE_WORDS):
+    # delete specific items from trash: needs a trash word or explicit numbers,
+    # so a sentence like "提醒我删除旧照片" is not treated as a delete command.
+    if any(w in low for w in DELETE_WORDS) and (has_trash or has_number):
         ids = [int(x) for x in re.findall(r"\d+", t)]
         return {"cmd": "delete", "ids": ids}
 
-    if any(w in low for w in TRASH_WORDS):
-        return {"cmd": "trash"}
-
-    if any(w in low for w in RESTORE_WORDS):
+    if any(w in low for w in RESTORE_WORDS) and (has_trash or has_number):
         m = re.search(r"(\d+)", t)
         if m:
             return {"cmd": "restore", "id": int(m.group(1))}
-        keyword = t
-        for w in RESTORE_WORDS:
-            keyword = keyword.replace(w, " ")
-        keyword = keyword.strip(" ：:，,。.!！的把")
+        keyword = _strip_tokens(t, RESTORE_WORDS).strip(" ：:，,。.!！的把")
         return {"cmd": "restore", "keyword": keyword or None}
 
-    # query
-    is_query = any(w in low for w in QUERY_WORDS)
-    priority = next((p for p in PRIORITIES if p in t.upper()), None)
-    rng = None
-    if any(w in low for w in TODAY_WORDS):
-        rng = "today"
-        is_query = True
-    elif any(w in low for w in WEEK_WORDS):
-        rng = "week"
-        is_query = True
-    if priority:
-        is_query = True
-    if is_query:
+    if has_trash:
+        return {"cmd": "trash"}
+
+    if _is_query_command(t, low):
+        priority = next((p for p in PRIORITIES if p in t.upper()), None)
+        rng = None
+        if any(w in low for w in TODAY_WORDS):
+            rng = "today"
+        elif any(w in low for w in WEEK_WORDS):
+            rng = "week"
         return {"cmd": "query", "priority": priority, "range": rng}
     return None
 
